@@ -8,6 +8,7 @@ import (
 	"errors"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/coder/websocket"
 	"golang.org/x/time/rate"
@@ -110,8 +111,9 @@ func (c *Conn) Send(m protocol.Message) bool {
 // Close sends what is already queued, then closes with the given code and reason.
 func (c *Conn) Close(code websocket.StatusCode, reason string) {
 	c.closeOnce.Do(func() {
-		if len(reason) > 123 { // the most a close frame can carry
-			reason = reason[:123]
+		for len(reason) > 123 { // the most a close frame can carry, cut on a character boundary
+			_, size := utf8.DecodeLastRuneInString(reason)
+			reason = reason[:len(reason)-size]
 		}
 		c.closeCode, c.closeReason = code, reason
 		close(c.closing)
@@ -151,6 +153,13 @@ func (c *Conn) Run(ctx context.Context, onMessage func(protocol.Message), onInva
 			return
 		}
 		var m protocol.Message
+		// Once closing, nothing more from this peer is acted on: a replaced or expired
+		// connection must not keep relaying while its close handshake completes.
+		select {
+		case <-c.closing:
+			return
+		default:
+		}
 		if typ != websocket.MessageText {
 			err = protocol.ErrNotObject
 		} else {

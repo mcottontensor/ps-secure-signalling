@@ -100,9 +100,10 @@ func Encode(m Message) ([]byte, error) {
 	return json.Marshal(m)
 }
 
-// streamerIDPattern is what a streamer may call itself: letters, digits and a little punctuation.
-// IDs are shown in player UIs and written to logs, so markup and control characters are refused.
-var streamerIDPattern = regexp.MustCompile(`^[\p{L}\p{N}_.:@+()\- ]{1,128}$`)
+// streamerIDPattern is what a streamer may call itself: letters, digits and a little punctuation
+// ("/" included, for tenant prefixes). IDs are shown in player UIs and written to logs, so markup
+// and control characters are refused.
+var streamerIDPattern = regexp.MustCompile(`^[\p{L}\p{N}_.:@+()/\- ]{1,128}$`)
 
 // ValidStreamerID reports whether id is an acceptable streamer id.
 func ValidStreamerID(id string) bool { return streamerIDPattern.MatchString(id) }

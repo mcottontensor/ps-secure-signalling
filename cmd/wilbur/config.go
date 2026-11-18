@@ -55,6 +55,9 @@ type Config struct {
 		Secret     string        `yaml:"secret"`
 		SecretFile string        `yaml:"secret_file"`
 		TTL        time.Duration `yaml:"ttl"`
+		// StreamerTTL is the lifetime of streamer and SFU credentials. They are configured once
+		// per signalling connection and use them for every player that joins, hence the long default.
+		StreamerTTL time.Duration `yaml:"streamer_ttl"`
 	} `yaml:"turn"`
 
 	Auth AuthConfig `yaml:"auth"`
@@ -134,6 +137,7 @@ func defaultConfig() *Config {
 	c.RateLimitPerMinute = 600
 	c.Signalling.MaxConnsPerIP = 64
 	c.TURN.TTL = 24 * time.Hour
+	c.TURN.StreamerTTL = 10 * 365 * 24 * time.Hour
 	c.Auth.Anonymous = []auth.Role{auth.RolePlayer, auth.RoleStreamer, auth.RoleSFU}
 	c.Auth.TokenQuery = "token"
 	return c
@@ -193,6 +197,9 @@ func (c *Config) validate() (warnings []string, err error) {
 			break
 		}
 	}
+	if j := c.Auth.JWT; j != nil && (j.OIDCIssuer != "" || j.JWKSURL != "") && j.Audience == "" {
+		warnings = append(warnings, "auth.jwt has no audience: tokens your identity provider issues for other applications are accepted if they carry ps_roles")
+	}
 	for _, p := range c.TrustedProxies {
 		if _, err := netip.ParsePrefix(p); err != nil {
 			errs = append(errs, fmt.Errorf("trusted_proxies: %w", err))
@@ -206,6 +213,20 @@ func (c *Config) validate() (warnings []string, err error) {
 
 func (c *Config) hasCredentialAuth() bool {
 	return len(c.Auth.Tokens) > 0 || c.Auth.JWT != nil || c.Auth.MTLS != nil || c.Auth.Webhook != nil
+}
+
+// reservedStreamerIDs are the ids static tokens reserve, protected from the start even while
+// their owners are offline.
+func (c *Config) reservedStreamerIDs() []string {
+	var ids []string
+	for _, t := range c.Auth.Tokens {
+		for _, id := range t.PublishAs {
+			if id != auth.Wildcard {
+				ids = append(ids, id)
+			}
+		}
+	}
+	return ids
 }
 
 func (c *Config) trustedProxies() []netip.Prefix {

@@ -92,7 +92,15 @@ func (s *Server) fromPlayer(p *peer, m protocol.Message) {
 		p.conn.Send(&protocol.StreamerList{IDs: s.visibleStreamersLocked(p, true)})
 	case *protocol.Ping:
 		p.conn.Send(&protocol.Pong{Time: v.Time})
-	case *protocol.Offer, *protocol.Answer, *protocol.IceCandidate, *protocol.DataChannelRequest,
+	case *protocol.Offer:
+		// A player may offer to a streamer (the frontend's OfferToReceive mode), but never to an
+		// SFU, which takes every offer as its upstream streamer's.
+		if p.upstream != nil && p.upstream.role == auth.RoleStreamer {
+			s.toUpstreamLocked(p, m, false)
+		} else {
+			s.unexpected(p, m)
+		}
+	case *protocol.Answer, *protocol.IceCandidate, *protocol.DataChannelRequest,
 		*protocol.PeerDataChannelsReady, *protocol.LayerPreference:
 		s.toUpstreamLocked(p, m, false)
 	default:
@@ -270,6 +278,11 @@ func (s *Server) setStreamerIDLocked(p *peer, requested string) {
 	}
 
 	final := requested
+	if _, reserved := s.reserved[requested]; reserved && !id.Pinned() {
+		s.log.Warn("reserved streamer id refused", "subject", id.Subject, "requested", requested)
+		p.conn.Close(wsconn.StatusUnauthorized, "streamer id not permitted")
+		return
+	}
 	if id.Pinned() {
 		if !id.MayPublishAs(requested) {
 			s.log.Info("streamer id not permitted", "subject", id.Subject, "requested", requested)
@@ -282,16 +295,26 @@ func (s *Server) setStreamerIDLocked(p *peer, requested string) {
 			s.dropSubscribersLocked(holder, "streamer replaced")
 			holder.conn.Close(wsconn.StatusReplaced, "replaced by a new connection")
 		}
+		s.reserved[requested] = struct{}{}
 	} else if requested != p.streamerID {
 		final = s.uniqueStreamerID(requested)
 	}
 
 	if final != p.streamerID {
-		delete(s.streamers, p.streamerID)
+		if s.streamers[p.streamerID] == p {
+			delete(s.streamers, p.streamerID)
+		}
 		s.streamers[final] = p
 		s.log.Info("streamer identified", "streamer", final, "was", p.streamerID)
 		p.streamerID = final
-		for _, sub := range p.subscribers {
+		for pid, sub := range p.subscribers {
+			// A rename must not carry subscribers somewhere their scope does not reach.
+			if !sub.identity.MaySubscribe(final) {
+				delete(p.subscribers, pid)
+				sub.upstream = nil
+				sub.conn.Close(websocket.StatusNormalClosure, "streamer renamed")
+				continue
+			}
 			sub.conn.Send(&protocol.StreamerIDChanged{NewID: final})
 		}
 	}

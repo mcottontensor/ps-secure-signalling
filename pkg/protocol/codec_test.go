@@ -73,7 +73,7 @@ func TestEveryTypeRoundTrips(t *testing.T) {
 }
 
 func TestStreamerIDs(t *testing.T) {
-	for _, ok := range []string{"DefaultStreamer", "SFU", "game-1.eu:west", "Ünïcödé 1", "a(b)+c@d"} {
+	for _, ok := range []string{"DefaultStreamer", "SFU", "game-1.eu:west", "Ünïcödé 1", "a(b)+c@d", "acme/default"} {
 		if !ValidStreamerID(ok) {
 			t.Errorf("%q refused", ok)
 		}

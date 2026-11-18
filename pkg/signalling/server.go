@@ -50,6 +50,11 @@ type Config struct {
 	// CloseOnExpiry closes connections when the credential they were opened with expires.
 	CloseOnExpiry bool
 
+	// ReservedStreamerIDs may only be registered by identities that list them in PublishAs. Ids an
+	// identity has registered with PublishAs are added automatically, so an id stays protected
+	// while its owner is offline. List ids here to protect them before their owner first connects.
+	ReservedStreamerIDs []string
+
 	// ClientIP extracts the client address used for per-IP limits and logs. Defaults to the
 	// connection's remote address; replace it when running behind a trusted proxy.
 	ClientIP func(*http.Request) string
@@ -78,6 +83,8 @@ type Server struct {
 	streamers  map[string]*peer // streamers and SFUs, by streamer id
 	players    map[string]*peer // players and SFUs, by player id
 	perIP      map[string]int
+	conns      map[bool]int        // admitted connections, keyed by "is a player"
+	reserved   map[string]struct{} // streamer ids only their PublishAs owners may register
 	nextPlayer uint64
 	nextTemp   uint64
 	closed     bool
@@ -94,7 +101,13 @@ func New(cfg Config, authn auth.Authenticator, hooks Hooks) *Server {
 	if len(cfg.PeerOptions) == 0 {
 		cfg.PeerOptions = json.RawMessage(`{}`)
 	}
+	reserved := map[string]struct{}{}
+	for _, id := range cfg.ReservedStreamerIDs {
+		reserved[id] = struct{}{}
+	}
 	return &Server{
+		reserved:  reserved,
+		conns:     map[bool]int{},
 		cfg:       cfg,
 		authn:     authn,
 		hooks:     hooks,
@@ -130,6 +143,15 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, role auth.Role) {
 	ip := s.cfg.ClientIP(r)
 	log := s.log.With("role", role, "remote", ip)
 
+	// Admission comes before authentication, so a flood of attempts is capped per address before
+	// it can turn into calls to a webhook or JWKS endpoint.
+	if err := s.admit(role, ip); err != nil {
+		log.Warn("connection refused", "reason", err)
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	defer s.release(role, ip)
+
 	id, err := s.authn.Authenticate(r.Context(), r, role)
 	if err != nil {
 		log.Info("connection refused", "reason", err)
@@ -145,13 +167,6 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, role auth.Role) {
 			return
 		}
 	}
-
-	if err := s.admit(role, ip); err != nil {
-		log.Warn("connection refused", "reason", err)
-		http.Error(w, err.Error(), http.StatusServiceUnavailable)
-		return
-	}
-	defer s.release(ip)
 
 	ws, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 		OriginPatterns:  s.cfg.AllowedOrigins,
@@ -208,23 +223,24 @@ func (s *Server) admit(role auth.Role, ip string) error {
 	if s.cfg.MaxConnsPerIP > 0 && s.perIP[ip] >= s.cfg.MaxConnsPerIP {
 		return fmt.Errorf("%w: too many connections from this address", errFull)
 	}
-	switch role {
-	case auth.RolePlayer:
-		if s.cfg.MaxPlayers > 0 && s.countRole(s.players, auth.RolePlayer) >= s.cfg.MaxPlayers {
-			return fmt.Errorf("%w: player limit reached", errFull)
-		}
-	default:
-		if s.cfg.MaxStreamers > 0 && len(s.streamers) >= s.cfg.MaxStreamers {
-			return fmt.Errorf("%w: streamer limit reached", errFull)
-		}
+	// Slots are reserved here and held until the connection ends, so concurrent upgrades cannot
+	// all pass the check before any of them registers.
+	isPlayer := role == auth.RolePlayer
+	if isPlayer && s.cfg.MaxPlayers > 0 && s.conns[true] >= s.cfg.MaxPlayers {
+		return fmt.Errorf("%w: player limit reached", errFull)
+	}
+	if !isPlayer && s.cfg.MaxStreamers > 0 && s.conns[false] >= s.cfg.MaxStreamers {
+		return fmt.Errorf("%w: streamer limit reached", errFull)
 	}
 	s.perIP[ip]++
+	s.conns[isPlayer]++
 	return nil
 }
 
-func (s *Server) release(ip string) {
+func (s *Server) release(role auth.Role, ip string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.conns[role == auth.RolePlayer]--
 	if s.perIP[ip]--; s.perIP[ip] <= 0 {
 		delete(s.perIP, ip)
 	}

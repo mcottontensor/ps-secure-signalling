@@ -394,3 +394,24 @@ func TestHooks(t *testing.T) {
 		t.Fatal("OnDisconnect not called")
 	}
 }
+
+func TestPlayerCannotOfferToSFU(t *testing.T) {
+	h := newHarness(t, signalling.Config{}, nil, signalling.Hooks{})
+	sfu := mustDial(t, h.sfu, nil)
+	sfu.expect(protocol.TypeIdentify)
+	sfu.send(&protocol.EndpointID{ID: "SFU"})
+	sfu.expect(protocol.TypeEndpointIDConfirm)
+	p, _ := h.connectPlayer(sfu, "SFU")
+	p.send(&protocol.Offer{SDP: "not a streamer"})
+	p.send(&protocol.Answer{SDP: "fine"})
+	if m := sfu.expect(protocol.TypeAnswer); m["sdp"] != "fine" {
+		t.Fatalf("got %v", m) // the offer before it was dropped
+	}
+	// To a real streamer, a player's offer still goes through (OfferToReceive).
+	s, _ := h.connectStreamer("Game", nil)
+	p2, _ := h.connectPlayer(s, "Game")
+	p2.send(&protocol.Offer{SDP: "player offer"})
+	if m := s.expect(protocol.TypeOffer); m["sdp"] != "player offer" {
+		t.Fatalf("got %v", m)
+	}
+}

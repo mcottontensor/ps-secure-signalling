@@ -114,3 +114,50 @@ func TestScopedPlayer(t *testing.T) {
 	}
 	anon.ws.Close(websocket.StatusNormalClosure, "")
 }
+
+func TestReservedIDProtectedWhileOwnerOffline(t *testing.T) {
+	// Configured up front, as wilbur does from its static tokens' publish_as.
+	st, _ := auth.NewStaticTokens(auth.DefaultTokenSource, []auth.StaticToken{
+		{Token: ue1Token, Subject: "ue1", Roles: []auth.Role{auth.RoleStreamer}, PublishAs: []string{"Game"}},
+		{Token: openToken, Subject: "open", Roles: []auth.Role{auth.RoleStreamer}},
+	})
+	h := newHarness(t, signalling.Config{ReservedStreamerIDs: []string{"Game"}}, &auth.Chain{Authenticators: []auth.Authenticator{st}}, signalling.Hooks{})
+
+	s := mustDial(t, h.streamer, bearer(openToken))
+	s.expect(protocol.TypeIdentify)
+	s.send(&protocol.EndpointID{ID: "Game"})
+	if code := s.expectClosed(); code != wsconn.StatusUnauthorized {
+		t.Fatalf("squatter close %v", code)
+	}
+	// Ids are also reserved once their owner has used them.
+	owner, _ := h.connectStreamer("Game", bearer(ue1Token))
+	owner.ws.Close(websocket.StatusNormalClosure, "")
+	s = mustDial(t, h.streamer, bearer(openToken))
+	s.expect(protocol.TypeIdentify)
+	s.send(&protocol.EndpointID{ID: "Game"})
+	if code := s.expectClosed(); code != wsconn.StatusUnauthorized {
+		t.Fatalf("squatter after owner left: close %v", code)
+	}
+}
+
+func TestRenameOutOfScopeDropsSubscriber(t *testing.T) {
+	h := tokenHarness(t)
+	s, _ := h.connectStreamer("Game", bearer(openToken))
+	p := mustDial(t, h.player, bearer(scopedPlayer)) // may only watch "Game"
+	p.expect(protocol.TypeConfig)
+	p.send(&protocol.Subscribe{StreamerID: "Game"})
+	s.expect(protocol.TypePlayerConnected)
+	s.send(&protocol.EndpointID{ID: "Elsewhere"})
+	p.expectClosed()
+}
+
+func TestRefusedAttemptsCountAgainstAddressLimit(t *testing.T) {
+	st, _ := auth.NewStaticTokens(auth.DefaultTokenSource, []auth.StaticToken{{Token: openToken, Roles: []auth.Role{auth.RolePlayer}}})
+	h := newHarness(t, signalling.Config{MaxConnsPerIP: 1}, &auth.Chain{Authenticators: []auth.Authenticator{st}}, signalling.Hooks{})
+	held := mustDial(t, h.player, bearer(openToken))
+	held.expect(protocol.TypeConfig)
+	// The address is at its limit, so even a bad credential is turned away before authentication.
+	if _, resp, err := dial(t, h.player, bearer("wrong-0123456789abcdef")); err == nil || resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("err %v", err)
+	}
+}

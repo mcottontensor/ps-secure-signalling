@@ -67,7 +67,7 @@ func run() error {
 	}
 	clientIP := web.ClientIPFunc(cfg.trustedProxies())
 
-	connAuth, err := buildAuth(ctx, cfg, auth.TokenSource{Query: cfg.Auth.TokenQuery, Cookie: cfg.Auth.TokenCookie})
+	connAuth, err := buildAuth(ctx, cfg, auth.TokenSource{Query: cfg.Auth.TokenQuery, Cookie: cfg.Auth.TokenCookie}, clientIP)
 	if err != nil {
 		return err
 	}
@@ -85,6 +85,7 @@ func run() error {
 		AllowedOrigins:      cfg.AllowedOrigins,
 		LegacyAutoSubscribe: cfg.Signalling.LegacyAutoSubscribe,
 		CloseOnExpiry:       cfg.Signalling.CloseOnExpiry,
+		ReservedStreamerIDs: cfg.reservedStreamerIDs(),
 		ClientIP:            clientIP,
 		Logger:              log,
 	}, connAuth, hooks)
@@ -99,6 +100,8 @@ func run() error {
 		if l.Addr == "" {
 			return nil
 		}
+		// Every request, websocket upgrades included, counts against the per-address rate.
+		h = web.RateLimit(h, cfg.RateLimitPerMinute, clientIP)
 		tlsCfg, err := l.TLS.Server()
 		if err != nil {
 			return fmt.Errorf("%s listener: %w", name, err)
@@ -171,7 +174,7 @@ func buildPlayerHandler(ctx context.Context, cfg *Config, srv *signalling.Server
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok\n")) })
 	if cfg.Listeners.Player.API {
 		// The API reads credentials from the Authorization header only, never the URL.
-		apiAuth, err := buildAuth(ctx, cfg, auth.TokenSource{})
+		apiAuth, err := buildAuth(ctx, cfg, auth.TokenSource{}, clientIP)
 		if err != nil {
 			return nil, err
 		}
@@ -190,7 +193,7 @@ func buildPlayerHandler(ctx context.Context, cfg *Config, srv *signalling.Server
 	if csp == "" {
 		csp = web.DefaultCSP
 	}
-	site := web.RateLimit(web.Headers(mux, csp, cfg.Listeners.Player.TLS.Enabled()), cfg.RateLimitPerMinute, clientIP)
+	site := web.Headers(mux, csp, cfg.Listeners.Player.TLS.Enabled())
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
@@ -202,7 +205,7 @@ func buildPlayerHandler(ctx context.Context, cfg *Config, srv *signalling.Server
 }
 
 // buildAuth assembles the authenticator chain from the configuration.
-func buildAuth(ctx context.Context, cfg *Config, src auth.TokenSource) (auth.Authenticator, error) {
+func buildAuth(ctx context.Context, cfg *Config, src auth.TokenSource, clientIP func(*http.Request) string) (auth.Authenticator, error) {
 	a := cfg.Auth
 	chain := &auth.Chain{Anonymous: a.Anonymous}
 
@@ -254,7 +257,7 @@ func buildAuth(ctx context.Context, cfg *Config, src auth.TokenSource) (auth.Aut
 			}
 		}
 		chain.Authenticators = append(chain.Authenticators, &auth.Webhook{
-			URL: w.URL, Secret: secret, Timeout: w.Timeout, ForwardHeaders: w.ForwardHeaders, Source: src,
+			URL: w.URL, Secret: secret, Timeout: w.Timeout, ForwardHeaders: w.ForwardHeaders, Source: src, ClientIP: clientIP,
 		})
 	}
 	return chain, nil
@@ -275,7 +278,7 @@ func buildHooks(cfg *Config, peerOptions json.RawMessage) (signalling.Hooks, err
 		// configured once when they connect and keep their credentials for as long as they run.
 		ttl, user := cfg.TURN.TTL, info.PlayerID
 		if info.Role != auth.RolePlayer {
-			ttl, user = 10*365*24*time.Hour, info.StreamerID
+			ttl, user = cfg.TURN.StreamerTTL, info.StreamerID
 		}
 		opts, err := turn.Apply(peerOptions, secret, ttl, user)
 		if err != nil {
