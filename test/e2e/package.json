@@ -1,0 +1,6 @@
+{
+  "name": "ps-secure-signalling-e2e",
+  "private": true,
+  "description": "Browser end-to-end checks: the stock Pixel Streaming frontend against wilbur, the SFU and teststreamer",
+  "dependencies": { "playwright": "^1.65.0" }
+}

@@ -1,0 +1,11 @@
+listeners:
+  player: { addr: ":8080", serve_static: true, api: true }
+  streamer: { addr: "127.0.0.1:8888" }
+  sfu: { addr: "127.0.0.1:8889" }
+static: { root: /www }
+auth:
+  # Streamers run on this host and connect over loopback. The SFU and the API need tokens.
+  anonymous: [player, streamer]
+  tokens:
+    - { token_file: /run/secrets/sfu_token, subject: sfu, roles: [sfu], publish_as: [SFU] }
+    - { token_file: /run/secrets/admin_token, subject: ops, roles: [admin] }

@@ -1,0 +1,37 @@
+# wilbur + SFU, with token authentication for the SFU and the REST API.
+#
+#   deploy/compose/init-secrets.sh                # creates deploy/secrets/{sfu,admin}.token
+#   docker compose -f deploy/docker-compose.yml up --build
+#
+# Mount the built frontend at ../www (see README). Both services use host networking: the SFU's
+# media port must be reachable by players, and wilbur's streamer and SFU listeners stay on loopback.
+x-hardening: &hardening
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  restart: unless-stopped
+  # The images run as an unprivileged user; run as yours so it can read the secrets you created.
+  user: "${UID:-1000}:${GID:-1000}"
+
+services:
+  wilbur:
+    <<: *hardening
+    build: { context: .., dockerfile: deploy/Dockerfile, target: wilbur }
+    network_mode: host
+    volumes:
+      - ./compose/wilbur.yaml:/etc/wilbur/wilbur.yaml:ro
+      - ../www:/www:ro
+    secrets: [sfu_token, admin_token]
+
+  sfu:
+    <<: *hardening
+    build: { context: .., dockerfile: deploy/Dockerfile, target: sfu }
+    network_mode: host
+    volumes:
+      - ./compose/sfu.yaml:/etc/sfu/sfu.yaml:ro
+    secrets: [sfu_token]
+    depends_on: [wilbur]
+
+secrets:
+  sfu_token: { file: ./secrets/sfu.token }
+  admin_token: { file: ./secrets/admin.token }

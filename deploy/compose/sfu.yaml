@@ -1,0 +1,4 @@
+signalling_url: ws://127.0.0.1:8889
+sfu_id: SFU
+token_file: /run/secrets/sfu_token
+ice: { udp_port: 50000 }   # open UDP 50000 to players; add public_ips behind 1:1 NAT

@@ -55,7 +55,8 @@ turn:
   # With a secret, every turn:/turns: entry in peer_options gets fresh credentials per connection,
   # matching coturn's use-auth-secret / static-auth-secret.
   secret_file: ""
-  ttl: 24h                 # lifetime of player credentials (streamers and SFUs get long-lived ones)
+  ttl: 24h                 # lifetime of player credentials
+  streamer_ttl: 87600h     # streamers and SFUs: configured once per connection, so long-lived by default
 
 auth:
   # Roles that may connect without credentials. The default allows all three, which is only safe
