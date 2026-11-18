@@ -9,6 +9,10 @@
 //     (UE sends on stream 0, receives on stream 1) to SFUs
 //   - replies to the frontend's initial settings request and latency test on the data channel
 //
+// With -ps1 it behaves like the original Pixel Streaming plugin instead: simulcast rids numbered
+// from simulcast1 (the largest) and listed smallest first, and one data channel per SFU player,
+// opened when the SFU sends streamerDataChannels.
+//
 // Make media with deploy/make-test-media.sh.
 package main
 
@@ -26,6 +30,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"sync"
 	"time"
 	"unicode/utf16"
@@ -63,6 +68,7 @@ type streamer struct {
 	layers []*webrtc.TrackLocalStaticSample // simulcast, largest first
 	audio  *webrtc.TrackLocalStaticSample
 	tags   *simulcastTagger
+	ps1    bool
 	mu     sync.Mutex
 	peers  map[protocol.PlayerID]*webrtc.PeerConnection
 }
@@ -76,15 +82,16 @@ func main() {
 	flag.StringVar(&tlsCfg.CAFile, "ca-file", "", "CA bundle to verify a wss:// signalling server")
 	flag.StringVar(&tlsCfg.CertFile, "cert-file", "", "client certificate, for mutual TLS")
 	flag.StringVar(&tlsCfg.KeyFile, "key-file", "", "client certificate key")
+	ps1 := flag.Bool("ps1", false, "behave like the original Pixel Streaming plugin rather than Pixel Streaming 2")
 	flag.Parse()
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	if err := run(log, *url, *id, *tokenFile, *mediaDir, tlsCfg); err != nil {
+	if err := run(log, *url, *id, *tokenFile, *mediaDir, tlsCfg, *ps1); err != nil {
 		log.Error("teststreamer failed", "err", err)
 		os.Exit(1)
 	}
 }
 
-func run(log *slog.Logger, url, id, tokenFile, mediaDir string, clientTLS config.ClientTLS) error {
+func run(log *slog.Logger, url, id, tokenFile, mediaDir string, clientTLS config.ClientTLS, ps1 bool) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
@@ -101,7 +108,7 @@ func run(log *slog.Logger, url, id, tokenFile, mediaDir string, clientTLS config
 	}
 	tags := &simulcastTagger{}
 	reg.Add(tags)
-	s := &streamer{log: log, api: webrtc.NewAPI(webrtc.WithMediaEngine(m), webrtc.WithInterceptorRegistry(reg)), tags: tags, peers: map[protocol.PlayerID]*webrtc.PeerConnection{}}
+	s := &streamer{log: log, api: webrtc.NewAPI(webrtc.WithMediaEngine(m), webrtc.WithInterceptorRegistry(reg)), tags: tags, ps1: ps1, peers: map[protocol.PlayerID]*webrtc.PeerConnection{}}
 
 	vp8 := webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeVP8, ClockRate: 90000}
 	files, _ := filepath.Glob(filepath.Join(mediaDir, "video_*.ivf"))
@@ -113,7 +120,7 @@ func run(log *slog.Logger, url, id, tokenFile, mediaDir string, clientTLS config
 		return err
 	}
 	for i := range files {
-		t, err := webrtc.NewTrackLocalStaticSample(vp8, "video", "pixelstreaming_av_stream_id", webrtc.WithRTPStreamID(fmt.Sprintf("simulcast%d", i)))
+		t, err := webrtc.NewTrackLocalStaticSample(vp8, "video", "pixelstreaming_av_stream_id", webrtc.WithRTPStreamID(fmt.Sprintf("simulcast%d", i+btoi(ps1))))
 		if err != nil {
 			return err
 		}
@@ -200,6 +207,12 @@ func (s *streamer) handle(m protocol.Message, id string) {
 			mid, idx := v.Candidate.SdpMid, uint16(v.Candidate.SdpMLineIndex)
 			_ = pc.AddICECandidate(webrtc.ICECandidateInit{Candidate: v.Candidate.Candidate, SDPMid: &mid, SDPMLineIndex: &idx})
 		}
+	case *protocol.StreamerDataChannels:
+		if pc := s.peer(v.SFUID); pc != nil && s.ps1 {
+			if err := s.perPlayerChannel(pc, v); err != nil {
+				s.log.Error("streamerDataChannels", "err", err)
+			}
+		}
 	case *protocol.PlayerDisconnected:
 		s.mu.Lock()
 		if pc := s.peers[v.PlayerID]; pc != nil {
@@ -239,11 +252,15 @@ func (s *streamer) addPeer(playerID protocol.PlayerID, sfu bool) error {
 	s.mu.Unlock()
 
 	if sfu {
-		tr, err := pc.AddTransceiverFromTrack(s.layers[0], webrtc.RTPTransceiverInit{Direction: webrtc.RTPTransceiverDirectionSendonly})
+		order := slices.Clone(s.layers)
+		if s.ps1 {
+			slices.Reverse(order) // PS1 lists its layers smallest first
+		}
+		tr, err := pc.AddTransceiverFromTrack(order[0], webrtc.RTPTransceiverInit{Direction: webrtc.RTPTransceiverDirectionSendonly})
 		if err != nil {
 			return err
 		}
-		for _, l := range s.layers[1:] {
+		for _, l := range order[1:] {
 			if err := tr.Sender().AddEncoding(l); err != nil {
 				return err
 			}
@@ -252,7 +269,11 @@ func (s *streamer) addPeer(playerID protocol.PlayerID, sfu bool) error {
 			s.tags.streams.Store(uint32(enc.SSRC), simulcastTag{rid: enc.RID, transceiver: tr})
 		}
 		drainRTCP(tr.Sender())
-		if err := s.multiplexChannels(pc); err != nil {
+		if !s.ps1 {
+			if err := s.multiplexChannels(pc); err != nil {
+				return err
+			}
+		} else if _, err := pc.CreateDataChannel("probe", nil); err != nil { // keeps an SCTP m-line in the offer
 			return err
 		}
 	} else {
@@ -305,7 +326,7 @@ func (s *streamer) addPeer(playerID protocol.PlayerID, sfu bool) error {
 		return err
 	}
 	msg := &protocol.Offer{PlayerID: playerID, SDP: offer.SDP}
-	if sfu {
+	if sfu && !s.ps1 {
 		yes := true
 		msg.Multiplex = &yes
 	}
@@ -342,6 +363,36 @@ func (s *streamer) multiplexChannels(pc *webrtc.PeerConnection) error {
 		}
 	})
 	return nil
+}
+
+// perPlayerChannel opens the channel(s) the original plugin uses for one player behind an SFU.
+func (s *streamer) perPlayerChannel(pc *webrtc.PeerConnection, m *protocol.StreamerDataChannels) error {
+	negotiated := true
+	sendID, recvID := uint16(m.SendStreamID), uint16(m.RecvStreamID)
+	send, err := pc.CreateDataChannel("datachannel", &webrtc.DataChannelInit{Negotiated: &negotiated, ID: &sendID})
+	if err != nil {
+		return err
+	}
+	recv := send
+	if recvID != sendID {
+		if recv, err = pc.CreateDataChannel("recvdatachannel", &webrtc.DataChannelInit{Negotiated: &negotiated, ID: &recvID}); err != nil {
+			return err
+		}
+	}
+	recv.OnMessage(func(msg webrtc.DataChannelMessage) {
+		if reply := s.reply(msg.Data); reply != nil {
+			_ = send.Send(reply)
+		}
+	})
+	s.log.Info("per-player data channel", "player", m.PlayerID, "send", sendID, "recv", recvID)
+	return nil
+}
+
+func btoi(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 // reply answers the data channel requests the frontend makes on connect and in a latency test.
