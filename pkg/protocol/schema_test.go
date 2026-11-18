@@ -46,7 +46,7 @@ var nested = map[string]reflect.Type{
 }
 
 // knownGaps are fields that real peers send but the schema does not declare. Remove an entry
-// once the upstream proto declares the field.
+// once the upstream proto declares the field (PixelStreamingInfrastructure#1244 declares all three).
 var knownGaps = map[string]string{
 	// The signalling server stamps messages it relays from a player with that player's id (the
 	// reference Wilbur does too, in PlayerConnection.sendToStreamer).
@@ -69,7 +69,8 @@ var (
 // compatible reports whether a Go field type can carry a proto field. Some are deliberately wider
 // than the schema, because real peers send more than it allows:
 //   - string fields may be PlayerID, which also accepts the numbers PS1 sends
-//   - int32 fields may be Number, because browsers send millisecond timestamps in ping
+//   - int32 fields may be Number, because browsers send millisecond timestamps in ping (the
+//     schema declares ping/pong time as double from PixelStreamingInfrastructure#1244)
 func compatible(f protoreflect.FieldDescriptor, goType reflect.Type) bool {
 	if goType.Kind() == reflect.Pointer {
 		goType = goType.Elem() // optional fields
@@ -87,6 +88,8 @@ func compatible(f protoreflect.FieldDescriptor, goType reflect.Type) bool {
 		return goType == tBool
 	case protoreflect.Int32Kind, protoreflect.Int64Kind, protoreflect.Uint32Kind, protoreflect.Uint64Kind:
 		return goType == tInt || goType == tNumber
+	case protoreflect.DoubleKind, protoreflect.FloatKind:
+		return goType == tNumber
 	case protoreflect.MessageKind:
 		name := string(f.Message().Name())
 		if schemaOnly[name] {
