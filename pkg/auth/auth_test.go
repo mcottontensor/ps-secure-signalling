@@ -172,8 +172,12 @@ func TestWebhook(t *testing.T) {
 		}
 		var in auth.WebhookRequest
 		_ = json.Unmarshal(body, &in)
-		allow := len(in.Tokens) == 1 && in.Tokens[0] == "letmein"
-		_ = json.NewEncoder(w).Encode(auth.WebhookResponse{Allow: allow, Subject: "bob", Streamers: []string{"Game"}})
+		allow := len(in.Tokens) == 1 && (in.Tokens[0] == "letmein" || in.Tokens[0] == "noroles")
+		var roles []auth.Role
+		if in.Tokens[0] == "letmein" {
+			roles = []auth.Role{auth.RolePlayer}
+		}
+		_ = json.NewEncoder(w).Encode(auth.WebhookResponse{Allow: allow, Subject: "bob", Roles: roles, Streamers: []string{"Game"}})
 	}))
 	defer ts.Close()
 
@@ -184,6 +188,10 @@ func TestWebhook(t *testing.T) {
 	}
 	if _, err := wh.Authenticate(context.Background(), req("nope"), auth.RolePlayer); !errors.Is(err, auth.ErrUnauthorized) {
 		t.Fatalf("deny: %v", err)
+	}
+	// An allow that grants no roles must not grant the role asked for (which could be admin).
+	if _, err := wh.Authenticate(context.Background(), req("noroles"), auth.RoleAdmin); !errors.Is(err, auth.ErrUnauthorized) {
+		t.Fatalf("allow without roles: %v", err)
 	}
 	wh.Secret = []byte("wrong")
 	if _, err := wh.Authenticate(context.Background(), req("letmein"), auth.RolePlayer); !errors.Is(err, auth.ErrUnauthorized) {
@@ -225,5 +233,20 @@ func TestMTLS(t *testing.T) {
 func TestStaticTokenTooShort(t *testing.T) {
 	if _, err := auth.NewStaticTokens(auth.DefaultTokenSource, []auth.StaticToken{{Token: "short", Roles: []auth.Role{auth.RolePlayer}}}); err == nil {
 		t.Fatal("short token accepted")
+	}
+}
+
+func TestScopes(t *testing.T) {
+	id := &auth.Identity{Streamers: []string{"acme/*", "Lobby"}, PublishAs: []string{"acme/one"}}
+	for sid, want := range map[string]bool{"acme/one": true, "acme/two": true, "Lobby": true, "globex/one": false, "acme": false, "acme/a/b": false} {
+		if id.MaySubscribe(sid) != want {
+			t.Errorf("MaySubscribe(%q) != %v", sid, want)
+		}
+	}
+	if !id.Pinned() || !id.MayPublishAs("acme/one") || id.MayPublishAs("acme/two") {
+		t.Error("PublishAs must be exact")
+	}
+	if open := (&auth.Identity{}); !open.MaySubscribe("anything") || open.Pinned() || !open.MayPublishAs("x") {
+		t.Error("empty scopes must be unrestricted")
 	}
 }

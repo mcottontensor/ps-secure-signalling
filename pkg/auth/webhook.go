@@ -11,12 +11,13 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 )
 
 // Webhook delegates the decision to an HTTP service. It POSTs a WebhookRequest and accepts the
-// connection only on a 200 response whose body is a WebhookResponse with "allow": true. Anything
-// else, including a timeout, rejects it.
+// connection only on a 200 response whose body is a WebhookResponse with "allow": true and the
+// roles granted. Anything else, including a timeout, rejects it.
 type Webhook struct {
 	URL     string
 	Secret  []byte        // if set, the body's HMAC-SHA256 is sent in X-PS-Signature as "sha256=<hex>"
@@ -26,6 +27,15 @@ type Webhook struct {
 	ForwardHeaders []string
 	Source         TokenSource
 	Client         *http.Client // optional; must not follow redirects
+	// ClientIP gives the address reported as remoteAddr; defaults to the request's RemoteAddr.
+	// Set it when behind a trusted proxy so the webhook sees the real client.
+	ClientIP func(*http.Request) string
+	// MaxConcurrent bounds calls in flight (default 32); further attempts are refused rather than
+	// queued, so a flood of connection attempts cannot pile up on the auth service.
+	MaxConcurrent int
+
+	once sync.Once
+	sem  chan struct{}
 }
 
 // WebhookRequest is what the webhook receives.
@@ -40,7 +50,8 @@ type WebhookRequest struct {
 	Timestamp  int64             `json:"timestamp"`
 }
 
-// WebhookResponse is what the webhook returns. Roles defaults to the role requested.
+// WebhookResponse is what the webhook returns. Roles must list what is granted: an allow without
+// roles is refused, so a webhook written with players in mind cannot grant admin by omission.
 type WebhookResponse struct {
 	Allow     bool           `json:"allow"`
 	Subject   string         `json:"subject"`
@@ -59,6 +70,19 @@ func (w *Webhook) client() *http.Client {
 }
 
 func (w *Webhook) Authenticate(ctx context.Context, r *http.Request, role Role) (*Identity, error) {
+	w.once.Do(func() {
+		n := w.MaxConcurrent
+		if n <= 0 {
+			n = 32
+		}
+		w.sem = make(chan struct{}, n)
+	})
+	select {
+	case w.sem <- struct{}{}:
+		defer func() { <-w.sem }()
+	default:
+		return nil, fmt.Errorf("%w: webhook busy", ErrUnauthorized)
+	}
 	headers := w.ForwardHeaders
 	if headers == nil {
 		headers = []string{"Authorization", "Cookie"}
@@ -71,6 +95,9 @@ func (w *Webhook) Authenticate(ctx context.Context, r *http.Request, role Role) 
 		Tokens:     w.Source.Tokens(r),
 		Headers:    map[string]string{},
 		Timestamp:  time.Now().Unix(),
+	}
+	if w.ClientIP != nil {
+		body.RemoteAddr = w.ClientIP(r)
 	}
 	for _, h := range headers {
 		if v := r.Header.Get(h); v != "" {
@@ -126,7 +153,7 @@ func (w *Webhook) Authenticate(ctx context.Context, r *http.Request, role Role) 
 		Claims:    out.Claims,
 	}
 	if len(id.Roles) == 0 {
-		id.Roles = []Role{role}
+		return nil, fmt.Errorf("%w: webhook allowed without granting any roles", ErrUnauthorized)
 	}
 	if out.ExpiresAt > 0 {
 		id.ExpiresAt = time.Unix(out.ExpiresAt, 0)

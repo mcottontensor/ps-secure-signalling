@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"path"
 	"slices"
 	"strings"
 	"time"
@@ -35,9 +36,10 @@ type Identity struct {
 	Method  string `json:"method"` // which authenticator produced it: token, jwt, mtls, webhook, anonymous
 	Roles   []Role `json:"roles"`
 	// Streamers lists the streamer ids this identity may subscribe to (players, SFUs) or see in a
-	// streamer list. Empty means no restriction.
+	// streamer list. Entries may be path.Match patterns, such as "tenant-a/*". Empty means no
+	// restriction.
 	Streamers []string `json:"streamers,omitempty"`
-	// PublishAs lists the streamer ids this identity may register as (streamers, SFUs). Empty means
+	// PublishAs lists the exact streamer ids this identity may register as (streamers, SFUs). Empty means
 	// no restriction, which keeps the legacy behaviour of suffixing an id that is already taken.
 	// When set, the id is reserved for this identity: it is never suffixed, and a new connection
 	// with the same identity replaces the old one.
@@ -53,7 +55,13 @@ func (id *Identity) HasRole(r Role) bool { return slices.Contains(id.Roles, r) }
 
 // MaySubscribe reports whether the identity may subscribe to, or list, the given streamer.
 func (id *Identity) MaySubscribe(streamerID string) bool {
-	return len(id.Streamers) == 0 || slices.Contains(id.Streamers, Wildcard) || slices.Contains(id.Streamers, streamerID)
+	if len(id.Streamers) == 0 {
+		return true
+	}
+	return slices.ContainsFunc(id.Streamers, func(pattern string) bool {
+		ok, _ := path.Match(pattern, streamerID)
+		return ok || pattern == streamerID
+	})
 }
 
 // Pinned reports whether the identity's streamer ids are reserved for it.
