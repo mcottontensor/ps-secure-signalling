@@ -1,5 +1,7 @@
 /bin/
 /dist/
+/www/
+/testmedia/
 *.pem
 *.key
 secrets/

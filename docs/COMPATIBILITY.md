@@ -19,6 +19,11 @@ Compared against PixelStreamingInfrastructure `master` (Wilbur in `SignallingWeb
 - `max_subscribers` counts players only; SFUs do not take a slot.
 - Player websockets are accepted on any path of the player port, next to the web server.
 - The original protocol test suite (`Extras/SS_Test`) passes unchanged against wilbur.
+- `pkg/protocol/schema_test.go` checks the message types against `signalling_messages.proto`.
+  Three fields that real traffic carries are missing from the proto: `playerId` on
+  `dataChannelRequest`, `peerDataChannelsReady` and `streamerDataChannels`. Two fields are declared
+  narrower than real traffic: `ping`/`pong` `time` is `int32` but holds millisecond timestamps, and
+  `playerId` is a string but PS1 sends numbers.
 
 ## Deliberately different
 

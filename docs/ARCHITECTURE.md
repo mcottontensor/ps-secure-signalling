@@ -19,6 +19,11 @@ everything passes through the structs, unknown fields are dropped. `PlayerID` ac
 and numbers (old streamers send numbers), and `ping.time` is echoed as the exact number received
 (browsers send millisecond timestamps that overflow the proto's `int32`).
 
+The `.proto` stays the contract, but it isn't used to generate code. `schema_test.go` compiles it
+(a copy in `testdata`, or upstream's via `PS_SIGNALLING_PROTO=<path>`) and fails if any message
+or field differs from the Go types in either direction, or has an incompatible type. Fields that
+peers really send but the schema does not declare are listed there as known gaps.
+
 **`pkg/wsconn`** wraps a `coder/websocket` connection. `Run` reads frames on the caller's goroutine,
 so one connection's messages are handled in order and never concurrently, and throttles them with a
 token bucket. `Send` encodes and enqueues without blocking. A writer goroutine drains the queue, and a

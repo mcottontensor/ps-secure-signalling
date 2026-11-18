@@ -6,6 +6,7 @@ toolchain go1.27.0
 
 require (
 	github.com/MicahParks/keyfunc/v3 v3.9.2
+	github.com/bufbuild/protocompile v0.14.1
 	github.com/coder/websocket v1.8.15
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/pion/ice/v4 v4.4.8
@@ -15,6 +16,7 @@ require (
 	github.com/pion/sdp/v3 v3.0.20
 	github.com/pion/webrtc/v4 v4.2.26
 	golang.org/x/time v0.16.0
+	google.golang.org/protobuf v1.34.2
 	gopkg.in/yaml.v3 v3.0.1
 )
 
@@ -34,5 +36,6 @@ require (
 	github.com/wlynxg/anet v0.0.5 // indirect
 	golang.org/x/crypto v0.48.0 // indirect
 	golang.org/x/net v0.50.0 // indirect
+	golang.org/x/sync v0.8.0 // indirect
 	golang.org/x/sys v0.41.0 // indirect
 )
