@@ -249,11 +249,14 @@ func (p *player) setCeiling(spatial int) {
 	p.mu.Unlock()
 }
 
+// waitBuilt reports whether the player's peer connection exists. It does not wait: it runs on the
+// SFU's one signalling goroutine, and a player only legitimately sends anything after receiving
+// the offer, which is sent once the connection is built.
 func (p *player) waitBuilt() bool {
 	select {
 	case <-p.built:
 		return p.pc != nil
-	case <-p.ctx.Done():
+	default:
 		return false
 	}
 }

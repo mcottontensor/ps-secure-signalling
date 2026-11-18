@@ -49,6 +49,7 @@ type SFU struct {
 	iceServers []webrtc.ICEServer
 	streamer   *streamer
 	players    map[string]*player
+	gone       map[string]struct{} // recently removed player ids, whose late messages are dropped
 	search     *time.Timer
 
 	// view is an immutable snapshot of the players, read for every forwarded packet without
@@ -182,23 +183,32 @@ func (s *SFU) handle(m protocol.Message) {
 		s.log.Warn("subscribe failed", "reason", v.Message)
 		s.scheduleSearch()
 	case *protocol.Offer:
-		// Always the upstream streamer's: players never send offers to an SFU. Its playerId, if
-		// any, is our own id as a player, left in place by older signalling servers.
+		// The upstream streamer's. Its playerId, if any, is our own id as a player, left in place
+		// by older signalling servers, which also relay a player's offer (the frontend's
+		// OfferToReceive mode); an offer naming one of our players is that, and is dropped.
+		if s.isPlayerID(string(v.PlayerID)) {
+			s.log.Warn("dropping offer from a player", "player", v.PlayerID)
+			return
+		}
 		s.onStreamerOffer(v)
 	case *protocol.Answer:
 		if p := s.player(string(v.PlayerID)); p != nil {
 			p.setAnswer(v.SDP)
 		}
 	case *protocol.IceCandidate:
+		// A candidate naming a player belongs to that player or nobody: never let one reach the
+		// streamer's connection, where it would make the SFU send to an address a player chose.
 		if p := s.player(string(v.PlayerID)); p != nil {
 			p.addCandidate(v.Candidate)
+		} else if s.isPlayerID(string(v.PlayerID)) {
+			return
 		} else if st := s.currentStreamer(); st != nil {
 			st.addCandidate(v.Candidate)
 		}
 	case *protocol.PlayerConnected:
 		s.onPlayerConnected(string(v.PlayerID))
 	case *protocol.PlayerDisconnected:
-		s.removePlayer(string(v.PlayerID), "player disconnected")
+		s.removePlayer(string(v.PlayerID), reasonPlayerLeft)
 	case *protocol.StreamerDisconnected:
 		s.log.Info("streamer disconnected")
 		s.teardownStreamer(true)
@@ -343,6 +353,9 @@ func (s *SFU) teardownStreamer(notify bool) {
 	s.mu.Lock()
 	st, players := s.streamer, s.players
 	s.streamer, s.players = nil, map[string]*player{}
+	for id := range players {
+		s.forgetLocked(id)
+	}
 	s.view.Store(&[]*player{})
 	s.mu.Unlock()
 	for _, p := range players {
@@ -416,7 +429,7 @@ func (s *SFU) onPlayerConnected(id string) {
 		s.log.Info("no streamer connected, ignoring player", "player", id)
 		return
 	case exists:
-		s.removePlayer(id, "player reconnected")
+		s.removePlayer(id, reasonReconnected)
 	case full:
 		refuse("SFU is full")
 		return
@@ -443,10 +456,44 @@ func (s *SFU) removePlayer(id, why string) {
 	s.mu.Lock()
 	p := s.players[id]
 	delete(s.players, id)
+	s.forgetLocked(id)
 	s.refreshView()
 	s.mu.Unlock()
-	if p != nil {
-		s.log.Info("player left", "player", id, "reason", why)
-		p.close()
+	if p == nil {
+		return
 	}
+	s.log.Info("player left", "player", id, "reason", why)
+	p.close()
+	// When the SFU gave up on the player, have the signalling server disconnect it, so the
+	// frontend reconnects instead of waiting for media that will never come.
+	if why != reasonPlayerLeft && why != reasonReconnected {
+		s.send(&protocol.DisconnectPlayer{PlayerID: protocol.PlayerID(id), Reason: why})
+	}
+}
+
+const (
+	reasonPlayerLeft  = "player disconnected"
+	reasonReconnected = "player reconnected"
+	maxGone           = 4096
+)
+
+// forgetLocked remembers a removed player id, so messages still in flight from it are dropped
+// rather than mistaken for the streamer's.
+func (s *SFU) forgetLocked(id string) {
+	if s.gone == nil || len(s.gone) >= maxGone {
+		s.gone = map[string]struct{}{}
+	}
+	s.gone[id] = struct{}{}
+}
+
+// isPlayerID reports whether id names a current or recently removed player.
+func (s *SFU) isPlayerID(id string) bool {
+	if id == "" {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, current := s.players[id]
+	_, gone := s.gone[id]
+	return current || gone
 }
