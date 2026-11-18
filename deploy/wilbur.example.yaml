@@ -1,0 +1,102 @@
+# wilbur configuration. Every setting is optional; the values shown are the defaults unless the
+# comment says otherwise. Unknown keys are an error, so a misspelt setting cannot be ignored.
+
+log:
+  level: info            # debug, info, warn, error
+  format: text           # text or json
+
+listeners:
+  # Players (browsers), the player page and the REST API share this port, as the frontend expects
+  # to find the signalling server where it loaded the page.
+  player:
+    addr: ":8080"
+    serve_static: true
+    api: false           # needs an authenticator that grants the admin role
+    tls:                 # omit to serve plain HTTP (e.g. behind a TLS-terminating proxy)
+      cert_file: ""
+      key_file: ""
+    http_redirect_addr: ""   # e.g. ":80" to redirect plain HTTP to the TLS port
+
+  # Streamers (UE) and SFUs. Keep these off public interfaces: they are bound to loopback by default,
+  # and wilbur refuses to start if they are exposed while allowing anonymous connections.
+  streamer:
+    addr: "127.0.0.1:8888"
+    tls:
+      cert_file: ""
+      key_file: ""
+      client_ca_file: ""         # enables client certificates (auth.mtls)
+      require_client_cert: false # refuse TLS handshakes without one
+  sfu:
+    addr: "127.0.0.1:8889"       # empty disables SFU connections
+
+static:
+  root: www                # the built frontend (Frontend/implementations/typescript → www)
+  homepage: player.html
+  csp: ""                  # empty uses a policy suited to the stock frontend
+
+rate_limit_per_minute: 600 # HTTP requests per client address (websocket messages are limited separately)
+trusted_proxies: []        # CIDRs whose X-Forwarded-For is believed, e.g. ["10.0.0.0/8"]
+allowed_origins: []        # extra Origin hosts allowed to open player websockets, e.g. ["*.example.com"]
+
+signalling:
+  max_subscribers: 0       # players per streamer; 0 = unlimited
+  max_players: 0           # total players; 0 = unlimited
+  max_streamers: 0         # total streamers and SFUs; 0 = unlimited
+  max_conns_per_ip: 64     # concurrent websocket connections per client address
+  legacy_auto_subscribe: false  # subscribe clients that never send "subscribe" (very old frontends)
+  close_on_expiry: false   # close connections when their JWT / certificate / webhook grant expires
+  # ICE configuration sent to every peer. Inline here, or as JSON in peer_options_file.
+  peer_options:
+    iceServers:
+      - urls: ["stun:stun.l.google.com:19302"]
+  # peer_options_file: peer_options.json
+
+turn:
+  # With a secret, every turn:/turns: entry in peer_options gets fresh credentials per connection,
+  # matching coturn's use-auth-secret / static-auth-secret.
+  secret_file: ""
+  ttl: 24h                 # lifetime of player credentials (streamers and SFUs get long-lived ones)
+
+auth:
+  # Roles that may connect without credentials. The default allows all three, which is only safe
+  # because the streamer and SFU listeners default to loopback.
+  anonymous: [player, streamer, sfu]
+  token_query: token       # browsers send tokens as ?token=; the Authorization header always works
+  token_cookie: ""         # e.g. "ps_token" for a login page on the same origin
+
+  # Pre-shared tokens. publish_as reserves streamer ids for the token (it can only register as
+  # those, and takes them over from anyone else); streamers limits what it may subscribe to and see.
+  tokens: []
+  #  - token_file: /run/secrets/ue1.token
+  #    subject: ue1
+  #    roles: [streamer]
+  #    publish_as: [DefaultStreamer]
+  #  - token_file: /run/secrets/sfu.token
+  #    subject: sfu
+  #    roles: [sfu]
+  #    publish_as: [SFU]
+  #  - token_file: /run/secrets/admin.token
+  #    subject: ops
+  #    roles: [admin]
+
+  # Signed tokens. Claims: ps_roles, ps_streamers, ps_publish (each a string or a list), plus exp.
+  # jwt:
+  #   hmac_secret_file: /run/secrets/jwt.key   # HS256; at least 32 bytes
+  #   oidc_issuer: https://login.example.com    # or jwks_url: https://.../jwks.json
+  #   audience: pixelstreaming
+  #   leeway: 30s
+
+  # Client certificates, verified against listeners.*.tls.client_ca_file.
+  # mtls:
+  #   roles: [streamer, sfu]
+  #   allowed_subjects: []      # CN or SAN; empty accepts any certificate the CA signed
+  #   publish_as_subject: true  # a certificate for CN=Game may only register as streamer "Game"
+
+  # Delegate the decision to your own service. See docs/AUTH.md for the request and response.
+  # webhook:
+  #   url: https://auth.internal/pixelstreaming
+  #   secret_file: /run/secrets/webhook.key     # signs requests: X-PS-Signature: sha256=<hmac>
+  #   timeout: 5s
+
+# Start even though anyone who can reach the streamer or SFU listener could connect as one.
+allow_insecure: false

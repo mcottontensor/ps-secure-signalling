@@ -1,0 +1,38 @@
+# Example SFU configuration. Every field is optional; the values shown are the defaults unless
+# marked otherwise.
+
+signalling_url: ws://localhost:8889   # use wss:// in production
+sfu_id: SFU
+subscribe_streamer_id: DefaultStreamer # empty subscribes to the first streamer listed
+retry_subscribe_delay: 10s
+log_level: info
+
+# Bearer token sent to the signalling server (Authorization header). Not set by default.
+# token_file: /run/secrets/sfu-token
+
+# TLS to the signalling server, for wss:// URLs. Not set by default.
+# tls:
+#   ca_file: /etc/ps/ca.pem        # trust this CA instead of the system roots
+#   cert_file: /etc/ps/sfu.pem     # client certificate, for mTLS
+#   key_file: /etc/ps/sfu-key.pem
+#   insecure_skip_verify: false    # never true outside development
+
+ice:
+  # udp_port: 50000                # carry all media on one UDP port (easiest to firewall)
+  port_min: 40000                  # otherwise, the range of ports used
+  port_max: 49999
+  # public_ips: [203.0.113.7]      # advertise these instead of the host's addresses (1:1 NAT)
+  # interfaces: [eth0]             # only gather candidates on these interfaces
+  include_loopback: false          # testing only: can pick a loopback/LAN pair browsers never accept
+  tcp: false
+
+bwe:
+  disabled: false                  # true: players always get their preferred layer
+  initial_bitrate: 20000000
+  min_bitrate: 100000
+  max_bitrate: 100000000
+
+max_players: 0                     # 0 = unlimited
+codecs: [vp8, vp9, h264, opus]     # av1 is also available
+max_data_channel_message: 262144
+gather_timeout: 5s
