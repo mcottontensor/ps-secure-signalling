@@ -27,6 +27,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	neturl "net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -141,6 +142,10 @@ func run(log *slog.Logger, url, id, tokenFile, mediaDir string, clientTLS config
 	}
 
 	header := http.Header{}
+	// Like Unreal's libwebsockets client: the server's address, without the port, as the Origin.
+	if u, err := neturl.Parse(url); err == nil {
+		header.Set("Origin", "http://"+u.Hostname())
+	}
 	if tokenFile != "" {
 		tok, err := config.Secret("", tokenFile)
 		if err != nil {

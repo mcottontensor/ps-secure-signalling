@@ -415,3 +415,23 @@ func TestPlayerCannotOfferToSFU(t *testing.T) {
 		t.Fatalf("got %v", m)
 	}
 }
+
+func TestOriginChecks(t *testing.T) {
+	h := newHarness(t, signalling.Config{}, nil, signalling.Hooks{})
+	origin := func(o string) http.Header { return http.Header{"Origin": {o}} }
+
+	// Unreal (libwebsockets) sends its own address without the port.
+	mustDial(t, h.streamer, origin("http://127.0.0.1")).expect(protocol.TypeIdentify)
+	mustDial(t, h.sfu, origin("http://127.0.0.1")).expect(protocol.TypeIdentify)
+	// Pages on other sites must never reach the streamer or SFU ports...
+	for _, srv := range []*httptest.Server{h.streamer, h.sfu, h.player} {
+		if _, resp, err := dial(t, srv, origin("https://evil.example")); err == nil || resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("%s: cross-site origin accepted (%v)", srv.URL, err)
+		}
+	}
+	// ...and players keep the strict host:port check.
+	if _, _, err := dial(t, h.player, origin("http://127.0.0.1")); err == nil {
+		t.Fatal("player origin without the port accepted")
+	}
+	mustDial(t, h.player, origin(h.player.URL)).expect(protocol.TypeConfig)
+}

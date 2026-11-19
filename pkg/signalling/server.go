@@ -13,6 +13,8 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -128,6 +130,27 @@ func RemoteHost(r *http.Request) string {
 	return host
 }
 
+// sameHostOrigin reports whether the request's Origin names this server's host, whatever its port.
+// Unreal's websocket client (libwebsockets) sends its own address without the port as the Origin,
+// e.g. "http://127.0.0.1" for a server at 127.0.0.1:8888, which the strict host:port comparison
+// refuses. Streamers and SFUs are not browsers, so a same-host Origin is enough for them; pages on
+// other sites are still refused. Players keep the strict check.
+func sameHostOrigin(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return false
+	}
+	u, err := url.Parse(origin)
+	if err != nil || u.Hostname() == "" {
+		return false
+	}
+	host := r.Host
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	return strings.EqualFold(u.Hostname(), strings.Trim(host, "[]"))
+}
+
 // Handler returns the websocket endpoint for one role. Mount each on its own listener: keeping the
 // streamer and SFU endpoints off the public interface is the first layer of defence.
 func (s *Server) Handler(role auth.Role) http.Handler {
@@ -169,8 +192,9 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, role auth.Role) {
 	}
 
 	ws, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-		OriginPatterns:  s.cfg.AllowedOrigins,
-		CompressionMode: websocket.CompressionDisabled,
+		OriginPatterns:     s.cfg.AllowedOrigins,
+		InsecureSkipVerify: role != auth.RolePlayer && sameHostOrigin(r),
+		CompressionMode:    websocket.CompressionDisabled,
 	})
 	if err != nil {
 		log.Info("websocket upgrade failed", "err", err)

@@ -56,7 +56,10 @@ What must hold:
 - **Separate listeners.** Streamer and SFU ports are separate sockets, on loopback by default, and
   wilbur refuses to expose them while anonymous.
 - **Origin check.** Browser websocket upgrades must come from the server's own origin or
-  `allowed_origins`, which stops other sites opening connections with a visitor's cookies.
+  `allowed_origins`, which stops other sites opening connections with a visitor's cookies. On the
+  streamer and SFU ports the Origin only has to name the same host, because Unreal's websocket
+  client sends its own address without the port (`http://127.0.0.1` for `127.0.0.1:8888`); a page on
+  another site still cannot connect.
 
 ### Resource limits (4)
 
